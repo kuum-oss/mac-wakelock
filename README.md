@@ -1,30 +1,44 @@
 # mac-wakelock
-![AIpresentation.png](Photo/AIpresentation.png)
-> Keeps your MacBook **fully awake** — lid closed, on battery or AC power — with two terminal commands.
 
-Built with Java + macOS `pmset`. Includes a battery monitor that alerts you when charge drops below 20%.
+![mac-wakelock banner](Photo/AIpresentation.png)
+
+> Keeps your MacBook **fully awake** — lid closed, on battery or AC power — with two terminal commands.
+> Pure shell. No Java. No Homebrew. No background daemons.
 
 ---
 
 ## Why this exists
 
-`caffeinate -s` only prevents sleep on AC power. Closing the lid on battery still puts the Mac to sleep, suspending all processes. This tool uses `pmset` at the system level to prevent that entirely.
+`caffeinate -s` only prevents sleep on AC power. Closing the lid on battery still suspends all processes. `mac-wakelock` uses `pmset` at the system level to prevent that entirely, and manages everything through a proper **launchd LaunchAgent** rather than fragile `nohup` processes.
 
 ---
 
-## Features
+## Compatibility
 
-- Prevents sleep with the **lid closed on battery**
-- **Battery alert** — sound + macOS notification below 20%
-- One-time setup, then just `wakelock on` / `wakelock off`
-- No password prompt after install
+| macOS Version | Intel (x86_64) | Apple Silicon (arm64) | Notes |
+|---|---|---|---|
+| 15 Sequoia | ✅ | ✅ | Low Power Mode may override on battery — disable it in System Settings → Battery |
+| 14 Sonoma | ✅ | ✅ | Fully supported |
+| 13 Ventura | ✅ | ✅ | Fully supported |
+| 12 Monterey | ✅ | ✅ | Fully supported |
+| 11 Big Sur | ❌ | ❌ | Not supported (minimum is macOS 12) |
+
+### Apple Silicon notes
+
+On M1/M2/M3 Macs, `wakelock on` additionally disables:
+- `hibernatemode` (prevents write-to-disk on sleep)
+- `standby` (prevents entering standby/deep sleep)
+- `autopoweroff` (prevents auto power-off while sleeping)
+
+All are restored to their defaults by `wakelock off`.
 
 ---
 
 ## Requirements
 
-- macOS 12+
-- Admin access (for initial setup only)
+- macOS 12 (Monterey) or later
+- Admin access (for `pmset` — prompted once during install, then passwordless via sudoers)
+- No Java, no Homebrew, no Python
 
 ---
 
@@ -38,36 +52,47 @@ chmod +x install.sh && ./install.sh
 
 The installer:
 
-1. Automatically checks and sets up Java 11+ (installs via Homebrew, or downloads a local portable JDK if Homebrew is not present)
-2. Compiles `NoSleep.java` to `~/.wakelock/`
-3. Creates the `wakelock` command in your PATH
-4. Writes a battery monitor script that runs in the background
-5. Configures passwordless `sudo pmset` safely via `/etc/sudoers.d/mac-wakelock` (with validation via `visudo`)
+1. Detects your chip and macOS version
+2. Copies `wakelock` and `monitor.sh` to `~/.wakelock/`
+3. Adds `~/.wakelock` to your `PATH`
+4. Writes a narrow sudoers rule — only for `/usr/bin/pmset`, nothing else
+5. Prints a summary of what was installed
 
-> You enter your password **once** during setup — never again.
+> You enter your password **once** during setup — never again for normal usage.
 
 ---
 
 ## Usage
 
 ```bash
-wakelock on       # disable sleep (lid closed, battery, everything)
-wakelock off      # restore normal sleep behavior
-wakelock status   # show current state and battery level
+wakelock on         # disable sleep (lid closed, battery, everything)
+wakelock off        # restore normal sleep behavior
+wakelock status     # show current state, battery level, pmset values
+wakelock uninstall  # remove mac-wakelock completely
 ```
 
 ### Example session
 
 ```
 $ wakelock on
+🔧  Disabling sleep…
 ✅  Sleep disabled — battery, lid closed, everything
 🔋  Battery monitor running (alert below 20%)
+🍎  Apple Silicon: hibernation + standby also disabled
 
 $ wakelock status
-Status : ✅ active
-Battery: 54%
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  mac-wakelock status
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  State:         ✅ active
+  Platform:      arm64 / macOS 14.5
+  Battery:       61% (discharging)
+  disablesleep:  1
+  sleep timer:   0 min
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 $ wakelock off
+🔧  Restoring sleep settings…
 ✅  Normal sleep behavior restored
 ```
 
@@ -78,9 +103,42 @@ $ wakelock off
 ```
 pmset -a sleep 0          # disable idle sleep timer
 pmset -a disablesleep 1   # prevent lid-close sleep (works on battery too)
+
+# Apple Silicon only:
+pmset -a hibernatemode 0  # no RAM dump to disk on sleep
+pmset -a standby 0        # no standby (deep sleep)
+pmset -a autopoweroff 0   # no auto power-off
 ```
 
-The battery monitor runs as a detached background process (`nohup`). It checks charge every 60 seconds and fires a native macOS notification + Sosumi sound when battery falls below 20%, then resets after charging back above 25%.
+The battery monitor is a **launchd LaunchAgent** (`com.kuum.wakelock.battery`) that runs every 60 seconds via `StartInterval`. It uses `KeepAlive/PathState` to automatically stop when `~/.wakelock/state` is removed — no manual cleanup needed. When battery drops below 20%, it fires a native macOS notification with the Sosumi sound.
+
+---
+
+## Security
+
+### What sudo access is used for
+
+`mac-wakelock` requires `sudo` **only** for `/usr/bin/pmset`. This is because `pmset -a` writes to system-level power management settings that affect all users and require root.
+
+The sudoers rule written during install:
+
+```
+yourusername ALL=(root) NOPASSWD: /usr/bin/pmset
+```
+
+This is a **narrowly scoped** rule: it grants passwordless `sudo` for `pmset` only — not for `bash`, `sh`, or any other command. It is stored in `/etc/sudoers.d/mac-wakelock` and validated with `visudo -c` before being applied.
+
+### Why not use IOKit directly?
+
+The `IOPMAssertionCreateWithName` IOKit API (used by `caffeinate`) can prevent idle sleep without root, but it **cannot** prevent lid-close sleep on battery — only `pmset -a disablesleep 1` can do that, which requires root.
+
+### Removing sudo access
+
+```bash
+wakelock uninstall
+# or manually:
+sudo rm /etc/sudoers.d/mac-wakelock
+```
 
 ---
 
@@ -88,24 +146,79 @@ The battery monitor runs as a detached background process (`nohup`). It checks c
 
 ```
 ~/.wakelock/
-├── NoSleep.class    compiled Java
-├── wakelock         shell wrapper → java -cp ~/.wakelock NoSleep "$@"
-├── monitor.sh       battery monitor (runs in background while active)
+├── wakelock         the CLI command (pure shell)
+├── monitor.sh       battery monitor (managed by launchd)
 ├── monitor.log      monitor output
-└── state            exists only while active (used as a lock file)
+├── state            exists only while active (launchd KeepAlive target)
+└── .monitor_warned  hysteresis flag for battery alerts
+
+~/Library/LaunchAgents/
+└── com.kuum.wakelock.battery.plist   launchd agent (StartInterval=60)
+
+/etc/sudoers.d/
+└── mac-wakelock     narrow pmset-only sudo rule
 ```
 
 ---
 
-## ⚠️ Warning
+## Troubleshooting
+
+### Mac still sleeps with lid closed
+
+1. Check `wakelock status` — is `disablesleep: 1`?
+2. On macOS 15+, disable **Low Power Mode**: System Settings → Battery → Low Power Mode → Off
+3. On Apple Silicon, check that standby is disabled: `pmset -g | grep standby` should show `0`
+4. Some MDM/corporate profiles can override `pmset` — check with your IT department
+
+### Battery notification not appearing
+
+1. Check System Settings → Notifications → Allow notifications for Script Editor / Terminal
+2. Verify the launchd agent is loaded: `launchctl list | grep wakelock`
+3. Check logs: `cat ~/.wakelock/monitor.log`
+
+### `wakelock: command not found` after install
+
+The installer adds `~/.wakelock` to your PATH in your shell rc file. Either:
+- Restart your terminal, or
+- Run: `export PATH="$HOME/.wakelock:$PATH"`
+
+### `sudo: /usr/bin/pmset: command not found`
+
+This should not happen on a standard macOS installation. Verify: `ls -la /usr/bin/pmset`
+
+### Resetting pmset to defaults manually
+
+```bash
+sudo pmset -a disablesleep 0
+sudo pmset -a sleep 1
+# Apple Silicon:
+sudo pmset -a hibernatemode 3
+sudo pmset -a standby 1
+sudo pmset -a autopoweroff 1
+```
+
+---
+
+## ⚠️ Warnings
 
 | Risk | Detail |
 |------|--------|
-| 🔋 Battery drain | The Mac won't sleep at all — battery drains faster |
+| 🔋 Battery drain | The Mac won't sleep at all — battery drains faster than usual |
 | 🌡️ Heat | Don't leave it in a closed bag for extended periods |
-| 🔄 Persistence | Active until you run `wakelock off` or reboot |
+| 🔄 Persistence | Active across reboots if launchd loads the plist on login |
+| 🔐 sudo | pmset requires root; the sudoers rule is scoped to `/usr/bin/pmset` only |
 
 **Always run `wakelock off` when you no longer need it.**
+
+---
+
+## Uninstall
+
+```bash
+wakelock uninstall
+```
+
+This restores pmset defaults, removes the launchd agent, deletes `~/.wakelock/`, removes the sudoers rule, and cleans up your shell rc files.
 
 ---
 
