@@ -1,5 +1,5 @@
 # mac-wakelock
-
+![AIpresentation.png](Photo/AIpresentation.png)
 > Keeps your MacBook **fully awake** — lid closed, on battery or AC power — with two terminal commands.
 
 Built with Java + macOS `pmset`. Includes a battery monitor that alerts you when charge drops below 20%.
@@ -31,7 +31,7 @@ Built with Java + macOS `pmset`. Includes a battery monitor that alerts you when
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/mac-wakelock.git
+git clone https://github.com/kuum-oss/mac-wakelock
 cd mac-wakelock
 chmod +x install.sh && ./install.sh
 ```
