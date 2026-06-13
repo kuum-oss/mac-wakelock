@@ -24,7 +24,6 @@ Built with Java + macOS `pmset`. Includes a battery monitor that alerts you when
 ## Requirements
 
 - macOS 12+
-- Java 11+
 - Admin access (for initial setup only)
 
 ---
@@ -39,11 +38,11 @@ chmod +x install.sh && ./install.sh
 
 The installer:
 
-1. Checks your Java version
+1. Automatically checks and sets up Java 11+ (installs via Homebrew, or downloads a local portable JDK if Homebrew is not present)
 2. Compiles `NoSleep.java` to `~/.wakelock/`
 3. Creates the `wakelock` command in your PATH
 4. Writes a battery monitor script that runs in the background
-5. Configures passwordless `sudo pmset` via `/etc/sudoers`
+5. Configures passwordless `sudo pmset` safely via `/etc/sudoers.d/mac-wakelock` (with validation via `visudo`)
 
 > You enter your password **once** during setup — never again.
 
